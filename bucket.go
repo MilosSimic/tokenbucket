@@ -7,22 +7,26 @@ import (
 )
 
 func New(ctx context.Context, opt *BucketOptions) *TokenBucket {
-	bucket := &TokenBucket{
+	b := &TokenBucket{
 		Capacity: opt.Capacity,
 		Tokens:   opt.Tokens,
 		Rate:     opt.Rate,
+		Notify:   make(chan *Message),
 	}
 
-	go func() {
+	go func(bucket *TokenBucket) {
 		timer := time.NewTicker(bucket.Rate)
 		for {
 			select {
 			case <-timer.C:
 				if bucket.Tokens < bucket.Capacity {
 					bucket.Tokens++
-					log.Print("Token added ", time.Now())
+					log.Print("Token added")
+					bucket.notify(TOKEN_ADDED, 1, "Token added")
 				} else if bucket.Tokens == bucket.Capacity {
-					bucket.flush(BUCKET_FULL, bucket.Capacity, 0, "Bucket full, flush!")
+					bucket.notify(BUCKET_FULL, bucket.Capacity, "Bucket full")
+				} else {
+					log.Print("Token not added, bucket full")
 				}
 
 			case <-ctx.Done():
@@ -32,15 +36,14 @@ func New(ctx context.Context, opt *BucketOptions) *TokenBucket {
 				return
 			}
 		}
-	}()
+	}(b)
 
-	return bucket
+	return b
 }
 
-func (b *TokenBucket) flush(kind, amount, tokens int, msg string) {
-	b.Tokens = tokens
+func (b *TokenBucket) notify(kind, amount int, msg string) {
 	b.Notify <- &Message{kind, amount}
-	log.Print(msg, " ", time.Now())
+	log.Print(msg)
 }
 
 func (b *TokenBucket) TakeAll() bool {
@@ -49,7 +52,8 @@ func (b *TokenBucket) TakeAll() bool {
 	}
 
 	if b.Tokens == b.Capacity {
-		b.flush(TAKEN_ALL, b.Capacity, 0, "Tokens taken, flush!")
+		b.Tokens = 0
+		go b.notify(TAKEN_ALL, b.Capacity, "Tokens Taken")
 		return true
 	}
 
@@ -63,7 +67,9 @@ func (b *TokenBucket) Take(n int) bool {
 
 	if b.Tokens <= b.Capacity {
 		curr := b.Tokens - n
-		b.flush(TAKEN_N, n, curr, "Taken n, flush!")
+		b.Tokens = curr
+
+		go b.notify(TAKEN_ALL, n, "Tokens Taken")
 		return true
 	}
 
@@ -76,6 +82,7 @@ func (b *TokenBucket) Drain() bool {
 	}
 
 	curr := b.Tokens
-	b.flush(DRAIN, curr, 0, "Bucket drain, flush!")
+	b.Tokens = 0
+	go b.notify(TAKEN_ALL, curr, "Tokens Drained")
 	return true
 }
